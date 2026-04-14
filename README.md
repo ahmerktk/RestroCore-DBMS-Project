@@ -20,7 +20,7 @@ RestroCore is a comprehensive Restaurant Management System designed to streamlin
 ## 📂 Project Structure
 
 ```text
-/DineFlow-POS
+/RestroCore
 │
 ├── /database
 │   ├── schema.sql           # Database initialization and DDL
