@@ -1,7 +1,7 @@
 # RestroCore-DBMS-Project
-# 🍽️ DineFlow POS
+# 🍽️ RestroCore
 
-DineFlow POS is a comprehensive Restaurant Management System designed to streamline order processing, inventory tracking, and supply chain management. This project serves as a practical implementation of advanced Relational Database Management System (RDBMS) concepts, featuring automated business logic, triggers, and relational data structures.
+RestroCore is a comprehensive Restaurant Management System designed to streamline order processing, inventory tracking, and supply chain management. This project serves as a practical implementation of advanced Relational Database Management System (RDBMS) concepts, featuring automated business logic, triggers, and relational data structures.
 
 ## 🚀 Key Features
 
@@ -14,13 +14,13 @@ DineFlow POS is a comprehensive Restaurant Management System designed to streaml
 
 * **Database:** PostgreSQL
 * **Backend/Logic:** Python
-* **GUI:** PyQt6
+* **GUI:** Flask
 * **Tools:** pgAdmin 4, Git
 
 ## 📂 Project Structure
 
 ```text
-/DineFlow-POS
+/RestroCore
 │
 ├── /database
 │   ├── schema.sql           # Database initialization and DDL
