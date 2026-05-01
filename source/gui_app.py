@@ -24,7 +24,7 @@ class RestroCoreApp:
     def __init__(self, root):
         self.root = root
         self.root.title("RestroCore - Advanced Management Dashboard")
-        self.root.geometry("1150x800")
+        self.root.geometry("1300x900")
         self.root.position_center()
         
         self.current_user = None
