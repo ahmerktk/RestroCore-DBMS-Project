@@ -21,13 +21,16 @@ RestroCore is a comprehensive Restaurant Management System designed to streamlin
 
 ```text
 /RestroCore
-│
+│── /assets
+     ├── //menu images
 ├── /database
 │   ├── schema.sql           # Database initialization and DDL
 │   └── functions.sql        # Triggers and stored procedures
-├── /src
+├── /source
 │   ├── main.py              # Application entry point
 │   └── db_manager.py        # Database connectivity and logic
+│──/venv
+│──/.vscode
 ├── /docs
 │   └── er_diagram.png       # Entity-Relationship diagram
 └── requirements.txt         # Dependencies
