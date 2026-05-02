@@ -530,3 +530,9 @@ if __name__ == "__main__":
     app_root = tb.Window(themename="cyborg")
     RestroCoreApp(app_root)
     app_root.mainloop()
+
+try:
+    app_root.mainloop()
+except KeyboardInterrupt:
+    print("Program stopped by user.")
+    # Perform any cleanup here if necessary
