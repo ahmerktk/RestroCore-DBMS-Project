@@ -10,6 +10,7 @@ try:
 except ImportError:
     HAS_PIL = False
 
+# Database configuration
 DB_CONFIG = {
     "dbname": "restaurant_pos",
     "user": "postgres",
@@ -25,13 +26,15 @@ class RestroCoreApp:
         self.root.geometry("1300x850")
         self.root.position_center()
 
+        # State Variables
         self.current_user    = None
         self.placeholder_img = None
         self.menu_image_map  = {}
-        self.menu_data       = {}   # {item_id: {name, price, stock, image_path}}
-        self.order_cart      = []   # [{item_id, name, price, quantity}]
-        self.thumb_refs      = {}   # keep PhotoImage references alive
+        self.menu_data       = {}   
+        self.order_cart      = []   
+        self.thumb_refs      = {}   
 
+        # Database Connection
         try:
             self.conn   = psycopg2.connect(**DB_CONFIG)
             self.cursor = self.conn.cursor()
@@ -45,6 +48,10 @@ class RestroCoreApp:
 
     # ─────────────────────────── LOGIN ───────────────────────────
     def build_login_screen(self):
+        # Clear any existing widgets
+        for w in self.root.winfo_children():
+            w.destroy()
+
         self.login_frame = tb.Frame(self.root, padding=40)
         self.login_frame.pack(expand=True)
 
@@ -63,33 +70,45 @@ class RestroCoreApp:
 
         tb.Button(self.login_frame, text="Login", bootstyle=SUCCESS,
                   width=28, command=self.attempt_login).pack(pady=20)
+        
         self.root.bind('<Return>', lambda e: self.attempt_login())
 
     def attempt_login(self):
         username = self.ent_user.get()
         password = self.ent_pass.get()
-        self.cursor.execute(
-            "SELECT employee_id, name, role FROM employees "
-            "WHERE username=%s AND password=%s", (username, password))
-        user = self.cursor.fetchone()
-        if user:
-            self.current_user = {"id": user[0], "name": user[1], "role": user[2]}
-            self.root.unbind('<Return>')
-            self.login_frame.destroy()
-            self.build_main_dashboard()
-        else:
-            Messagebox.show_error("Invalid username or password.", "Login Failed")
+        
+        try:
+            self.cursor.execute(
+                "SELECT employee_id, name, role FROM employees "
+                "WHERE username=%s AND password=%s", (username, password))
+            user = self.cursor.fetchone()
+            
+            if user:
+                self.current_user = {"id": user[0], "name": user[1], "role": user[2]}
+                self.root.unbind('<Return>')
+                self.build_main_dashboard()
+            else:
+                Messagebox.show_error("Invalid username or password.", "Login Failed")
+        except Exception as e:
+            Messagebox.show_error(f"Login Error: {e}", "Error")
 
     # ─────────────────────────── DASHBOARD ───────────────────────────
     def build_main_dashboard(self):
+        # Clear login screen
+        for w in self.root.winfo_children():
+            w.destroy()
+
+        # Header bar
         header = tb.Frame(self.root, bootstyle=DARK, padding=15)
         header.pack(fill=X)
         tb.Label(header,
                  text=f"👤 {self.current_user['name']} | Role: {self.current_user['role']}",
                  font=("Helvetica", 12), bootstyle=INVERSE).pack(side=LEFT)
+        
         tb.Button(header, text="Logout", bootstyle=(DANGER, OUTLINE),
                   command=self.logout).pack(side=RIGHT)
 
+        # Tabs
         self.tab_control = tb.Notebook(self.root, bootstyle=INFO)
         self.tab_control.pack(expand=True, fill=BOTH, padx=20, pady=20)
 
@@ -106,6 +125,7 @@ class RestroCoreApp:
             self.tab_control.add(self.tab_staff, text='👥 Staff Management')
             self.setup_staff_tab()
 
+        # Initialize UI Components
         self.setup_menu_tab()
         self.setup_order_tab()
         self.setup_billing_tab()
@@ -139,7 +159,7 @@ class RestroCoreApp:
         self.img_label = tb.Label(self.preview_frame,
                                   text="Select an item\nto view image",
                                   font=("Helvetica", 10))
-        self.img_label.pack(expand=True, fill=BOTH, pady=(0, 20))
+        self.img_label.pack(expand=True, fill=BOTH, pady=(0, 20), padx=10)
 
         self.load_menu_data()
 
@@ -161,370 +181,251 @@ class RestroCoreApp:
             }
             self.tree_menu.insert('', END, values=(item_id, name, price, stock))
 
+        # Only rebuild cards if the Order Tab UI is ready
         if hasattr(self, '_order_tab_ready'):
             self.build_food_cards()
 
     def on_menu_select(self, event):
         sel = self.tree_menu.selection()
-        if not sel:
-            return
+        if not sel: return
+        
         item_id = str(self.tree_menu.item(sel[0])['values'][0])
         img_path = self.menu_image_map.get(item_id)
+        
         if HAS_PIL and img_path and os.path.exists(img_path):
             try:
                 img = Image.open(img_path).resize((280, 280), Image.Resampling.LANCZOS)
                 self.placeholder_img = ImageTk.PhotoImage(img)
                 self.img_label.config(image=self.placeholder_img, text="")
                 return
-            except Exception:
-                pass
+            except Exception: pass
+        
         self.img_label.config(image='', text="No Image Available")
 
     # ─────────────────────────── ORDER TAB ───────────────────────────
     def setup_order_tab(self):
-        # ── Top bar ──────────────────────────────────────────────────
         top_bar = tb.Frame(self.tab_orders)
         top_bar.pack(fill=X, pady=(0, 8))
 
-        tb.Label(top_bar, text="Table Number:",
-                 font=("Helvetica", 12, "bold")).pack(side=LEFT, padx=(0, 6))
+        tb.Label(top_bar, text="Table Number:", font=("Helvetica", 12, "bold")).pack(side=LEFT, padx=(0, 6))
         self.ent_table = tb.Entry(top_bar, width=6, font=("Helvetica", 12))
         self.ent_table.pack(side=LEFT, padx=(0, 20))
 
-        tb.Label(top_bar, text="Search:",
-                 font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 4))
+        tb.Label(top_bar, text="Search:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 4))
         self.search_var = tb.StringVar()
         self.search_var.trace_add("write", lambda *a: self.build_food_cards())
-        tb.Entry(top_bar, textvariable=self.search_var,
-                 width=16, font=("Helvetica", 11)).pack(side=LEFT)
+        tb.Entry(top_bar, textvariable=self.search_var, width=16, font=("Helvetica", 11)).pack(side=LEFT)
 
-        tb.Button(top_bar, text="↻ Refresh", bootstyle=INFO,
-                  command=self.load_menu_data).pack(side=RIGHT)
+        tb.Button(top_bar, text="↻ Refresh", bootstyle=INFO, command=self.load_menu_data).pack(side=RIGHT)
 
-        # ── Main split: food grid LEFT, cart RIGHT ────────────────────
         main = tb.Frame(self.tab_orders)
         main.pack(fill=BOTH, expand=True)
 
-        # RIGHT cart panel (packed first with side=RIGHT so it gets fixed space)
-        right_panel = tb.Frame(main, width=280)
+        # Right Cart Panel
+        right_panel = tb.Frame(main, width=300)
         right_panel.pack(side=RIGHT, fill=Y, padx=(10, 0))
         right_panel.pack_propagate(False)
 
-        tb.Label(right_panel, text="🛒  Cart",
-                 font=("Helvetica", 12, "bold")).pack(anchor=W, pady=(0, 4))
+        tb.Label(right_panel, text="🛒  Cart", font=("Helvetica", 12, "bold")).pack(anchor=W, pady=(0, 4))
 
         cart_cols = ('name', 'qty', 'sub')
-        self.tree_cart = tb.Treeview(right_panel, columns=cart_cols,
-                                     show='headings', bootstyle=SUCCESS, height=16)
-        self.tree_cart.heading('name', text='Item')
-        self.tree_cart.heading('qty',  text='Qty')
-        self.tree_cart.heading('sub',  text='Subtotal')
-        self.tree_cart.column('name', width=130)
-        self.tree_cart.column('qty',  width=40,  anchor=CENTER)
-        self.tree_cart.column('sub',  width=80,  anchor=E)
+        self.tree_cart = tb.Treeview(right_panel, columns=cart_cols, show='headings', bootstyle=SUCCESS, height=16)
+        self.tree_cart.heading('name', text='Item'); self.tree_cart.heading('qty', text='Qty'); self.tree_cart.heading('sub', text='Subtotal')
+        self.tree_cart.column('name', width=140); self.tree_cart.column('qty', width=50, anchor=CENTER); self.tree_cart.column('sub', width=90, anchor=E)
         self.tree_cart.pack(fill=BOTH, expand=True)
 
-        tb.Button(right_panel, text="✕ Remove Selected",
-                  bootstyle=(DANGER, OUTLINE),
-                  command=self.remove_cart_item).pack(fill=X, pady=(6, 2))
+        tb.Button(right_panel, text="✕ Remove Selected", bootstyle=(DANGER, OUTLINE), command=self.remove_cart_item).pack(fill=X, pady=(6, 2))
 
-        self.lbl_total = tb.Label(right_panel, text="Total: $0.00",
-                                  font=("Helvetica", 12, "bold"),
-                                  bootstyle=WARNING)
+        self.lbl_total = tb.Label(right_panel, text="Total: $0.00", font=("Helvetica", 12, "bold"), bootstyle=WARNING)
         self.lbl_total.pack(anchor=E, pady=4)
 
-        tb.Button(right_panel, text="✔  Place Order",
-                  bootstyle=SUCCESS,
-                  command=self.place_order_from_cart).pack(fill=X, pady=(4, 0))
+        tb.Button(right_panel, text="✔  Place Order", bootstyle=SUCCESS, command=self.place_order_from_cart).pack(fill=X, pady=(4, 0))
 
-        # LEFT food grid panel (gets all remaining space)
+        # Left Grid Panel
         left_panel = tb.Frame(main)
         left_panel.pack(side=LEFT, fill=BOTH, expand=True)
 
-        tb.Label(left_panel, text="🍽  Select Items",
-                 font=("Helvetica", 12, "bold")).pack(anchor=W, pady=(0, 4))
-
-        canvas_holder = tb.Frame(left_panel)
-        canvas_holder.pack(fill=BOTH, expand=True)
-
-        self.cards_canvas = tb.Canvas(canvas_holder, highlightthickness=0)
-        vsb = tb.Scrollbar(canvas_holder, orient=VERTICAL,
-                           command=self.cards_canvas.yview)
+        self.cards_canvas = tb.Canvas(left_panel, highlightthickness=0)
+        vsb = tb.Scrollbar(left_panel, orient=VERTICAL, command=self.cards_canvas.yview)
         self.cards_canvas.configure(yscrollcommand=vsb.set)
+        
         vsb.pack(side=RIGHT, fill=Y)
         self.cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
 
         self.cards_inner = tb.Frame(self.cards_canvas)
-        self._canvas_win = self.cards_canvas.create_window(
-            (0, 0), window=self.cards_inner, anchor=NW)
+        self._canvas_win = self.cards_canvas.create_window((0, 0), window=self.cards_inner, anchor=NW)
 
-        self.cards_inner.bind("<Configure>",
-            lambda e: self.cards_canvas.configure(
-                scrollregion=self.cards_canvas.bbox("all")))
-        self.cards_canvas.bind("<Configure>",
-            lambda e: self.cards_canvas.itemconfig(
-                self._canvas_win, width=e.width))
-        self.cards_canvas.bind("<MouseWheel>",
-            lambda e: self.cards_canvas.yview_scroll(
-                int(-1 * (e.delta / 120)), "units"))
+        self.cards_inner.bind("<Configure>", lambda e: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")))
+        self.cards_canvas.bind("<Configure>", lambda e: self.cards_canvas.itemconfig(self._canvas_win, width=e.width))
 
         self._order_tab_ready = True
         self.build_food_cards()
 
-    # ── Food card grid ─────────────────────────────────────────────
     def build_food_cards(self):
-        for w in self.cards_inner.winfo_children():
-            w.destroy()
+        if not hasattr(self, 'cards_inner'): return
+        for w in self.cards_inner.winfo_children(): w.destroy()
         self.thumb_refs.clear()
 
-        search = self.search_var.get().lower() if hasattr(self, 'search_var') else ""
-        COLS  = 3
-        THUMB = 100
+        search = self.search_var.get().lower()
+        items = [(iid, d) for iid, d in self.menu_data.items() if search in d['name'].lower()]
 
-        items = [(iid, d) for iid, d in self.menu_data.items()
-                 if search in d['name'].lower()]
-
-        if not items:
-            tb.Label(self.cards_inner, text="No items found.",
-                     font=("Helvetica", 11)).grid(row=0, column=0,
-                                                   padx=20, pady=20)
-            return
-
+        COLS = 3
         for idx, (item_id, data) in enumerate(items):
             r, c = divmod(idx, COLS)
-
-            card = tb.Frame(self.cards_inner, bootstyle=SECONDARY, padding=8)
-            card.grid(row=r, column=c, padx=6, pady=6, sticky=NSEW)
+            card = tb.Frame(self.cards_inner, bootstyle=SECONDARY, padding=10)
+            card.grid(row=r, column=c, padx=8, pady=8, sticky=NSEW)
             self.cards_inner.columnconfigure(c, weight=1)
 
-            # image or emoji fallback
-            img_lbl = tb.Label(card, text="🍽", font=("Helvetica", 26))
+            # Image logic
+            img_lbl = tb.Label(card, text="🍽", font=("Helvetica", 32))
             if HAS_PIL and data['image_path'] and os.path.exists(data['image_path']):
                 try:
-                    pil_img = Image.open(data['image_path']).resize(
-                        (THUMB, THUMB), Image.Resampling.LANCZOS)
-                    photo = ImageTk.PhotoImage(pil_img)
+                    p_img = Image.open(data['image_path']).resize((100, 100), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(p_img)
                     self.thumb_refs[item_id] = photo
                     img_lbl.config(image=photo, text="")
-                except Exception:
-                    pass
-            img_lbl.pack(pady=(0, 4))
+                except: pass
+            img_lbl.pack(pady=5)
 
-            tb.Label(card, text=data['name'],
-                     font=("Helvetica", 10, "bold"),
-                     wraplength=150, justify=CENTER).pack()
-            tb.Label(card, text=f"${float(data['price']):.2f}",
-                     font=("Helvetica", 10), bootstyle=SUCCESS).pack()
-
-            stock_val = data['stock'] if data['stock'] is not None else 0
-            tb.Label(card, text=f"Stock: {stock_val}",
-                     font=("Helvetica", 9),
-                     bootstyle=WARNING if stock_val < 10 else INFO).pack(pady=(2, 6))
+            tb.Label(card, text=data['name'], font=("Helvetica", 10, "bold"), justify=CENTER).pack()
+            tb.Label(card, text=f"${float(data['price']):.2f}", bootstyle=SUCCESS).pack()
 
             qty_var = tb.IntVar(value=1)
             row_f = tb.Frame(card)
-            row_f.pack()
-            tb.Label(row_f, text="Qty:").pack(side=LEFT, padx=(0, 4))
-            tb.Spinbox(row_f, from_=1, to=max(1, stock_val),
-                       textvariable=qty_var, width=5).pack(side=LEFT)
-
-            tb.Button(card, text="Add to Cart",
-                      bootstyle=(SUCCESS, OUTLINE), width=13,
-                      command=lambda iid=item_id, qv=qty_var:
-                          self.add_to_cart(iid, qv.get())).pack(pady=(6, 0))
+            row_f.pack(pady=5)
+            tb.Spinbox(row_f, from_=1, to=99, textvariable=qty_var, width=5).pack(side=LEFT)
+            tb.Button(card, text="Add", bootstyle=SUCCESS, width=8,
+                      command=lambda i=item_id, q=qty_var: self.add_to_cart(i, q.get())).pack()
 
     def add_to_cart(self, item_id, quantity):
-        if item_id not in self.menu_data:
-            return
-        quantity = max(1, int(quantity))
         for row in self.order_cart:
             if row['item_id'] == item_id:
                 row['quantity'] += quantity
                 self.refresh_cart_view()
                 return
+        
         data = self.menu_data[item_id]
         self.order_cart.append({
-            'item_id':  item_id,
-            'name':     data['name'],
-            'price':    float(data['price']),
-            'quantity': quantity
+            'item_id': item_id, 'name': data['name'],
+            'price': float(data['price']), 'quantity': quantity
         })
         self.refresh_cart_view()
 
     def refresh_cart_view(self):
-        for i in self.tree_cart.get_children():
-            self.tree_cart.delete(i)
+        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
         total = 0.0
         for row in self.order_cart:
             sub = row['price'] * row['quantity']
             total += sub
-            self.tree_cart.insert('', END,
-                values=(row['name'], row['quantity'], f"${sub:.2f}"))
+            self.tree_cart.insert('', END, values=(row['name'], row['quantity'], f"${sub:.2f}"))
         self.lbl_total.config(text=f"Total: ${total:.2f}")
 
     def remove_cart_item(self):
         sel = self.tree_cart.selection()
-        if not sel:
-            return
-        idx = self.tree_cart.index(sel[0])
-        if 0 <= idx < len(self.order_cart):
+        if sel:
+            idx = self.tree_cart.index(sel[0])
             self.order_cart.pop(idx)
-        self.refresh_cart_view()
+            self.refresh_cart_view()
 
     def place_order_from_cart(self):
         table = self.ent_table.get().strip()
-        if not table.isdigit():
-            Messagebox.show_warning("Enter a valid table number.", "Input Error")
+        if not table.isdigit() or not self.order_cart:
+            Messagebox.show_warning("Invalid table or empty cart", "Warning")
             return
-        if not self.order_cart:
-            Messagebox.show_warning("Your cart is empty.", "Empty Cart")
-            return
+        
         try:
-            self.cursor.execute(
-                "SELECT order_id FROM orders "
-                "WHERE table_number=%s AND status='Pending'", (table,))
-            existing = self.cursor.fetchone()
-            order_id = existing[0] if existing else None
-
-            if not order_id:
-                self.cursor.execute(
-                    "INSERT INTO orders (table_number, employee_id) "
-                    "VALUES (%s, %s) RETURNING order_id",
-                    (table, self.current_user['id']))
-                order_id = self.cursor.fetchone()[0]
-
+            self.cursor.execute("INSERT INTO orders (table_number, employee_id) VALUES (%s, %s) RETURNING order_id", 
+                               (table, self.current_user['id']))
+            order_id = self.cursor.fetchone()[0]
             for row in self.order_cart:
-                self.cursor.execute(
-                    "INSERT INTO order_items (order_id, item_id, quantity) "
-                    "VALUES (%s, %s, %s)",
-                    (order_id, row['item_id'], row['quantity']))
-
+                self.cursor.execute("INSERT INTO order_items (order_id, item_id, quantity) VALUES (%s, %s, %s)",
+                                   (order_id, row['item_id'], row['quantity']))
             self.conn.commit()
-            Messagebox.show_info(
-                f"Order #{order_id} placed for Table {table}!\n"
-                f"{len(self.order_cart)} item(s) added.", "Order Placed")
+            Messagebox.show_info(f"Order #{order_id} placed!", "Success")
             self.order_cart.clear()
             self.refresh_cart_view()
-            self.load_menu_data()
         except Exception as e:
             self.conn.rollback()
-            Messagebox.show_error(f"Order failed:\n{e}", "Error")
+            Messagebox.show_error(str(e), "Error")
 
     # ─────────────────────────── BILLING TAB ───────────────────────────
     def setup_billing_tab(self):
         top = tb.Frame(self.tab_billing)
         top.pack(fill=X, pady=10)
-        tb.Label(top, text="Table #:", font=("Helvetica", 12)).pack(side=LEFT, padx=10)
+        tb.Label(top, text="Table #:").pack(side=LEFT, padx=10)
         self.ent_bill_table = tb.Entry(top, width=10)
         self.ent_bill_table.pack(side=LEFT, padx=5)
-        tb.Button(top, text="Generate Receipt", bootstyle=INFO,
-                  command=self.generate_bill).pack(side=LEFT, padx=10)
+        tb.Button(top, text="Generate Bill", command=self.generate_bill).pack(side=LEFT, padx=10)
 
-        self.txt_bill = tb.Text(self.tab_billing, height=20, width=80,
-                                font=("Courier", 10))
+        self.txt_bill = tb.Text(self.tab_billing, height=18, width=70, font=("Courier", 10))
         self.txt_bill.pack(pady=10)
-        self.txt_bill.config(state=DISABLED)
-
-        self.btn_pay = tb.Button(self.tab_billing, text="Complete Payment",
-                                 bootstyle=SUCCESS, state=DISABLED,
-                                 command=self.checkout)
-        self.btn_pay.pack(pady=10)
-        self.active_bill_id = None
+        self.btn_pay = tb.Button(self.tab_billing, text="Mark as Paid", state=DISABLED, command=self.checkout)
+        self.btn_pay.pack()
 
     def generate_bill(self):
         table = self.ent_bill_table.get()
-        if not table.isdigit():
-            return
-        self.cursor.execute(
-            "SELECT order_id, total_amount FROM orders "
-            "WHERE table_number=%s AND status='Pending'", (table,))
+        if not table.isdigit(): return
+        
+        self.cursor.execute("SELECT order_id, total_amount FROM orders WHERE table_number=%s AND status='Pending'", (table,))
         order = self.cursor.fetchone()
-
+        
         self.txt_bill.config(state=NORMAL)
         self.txt_bill.delete(1.0, END)
-
-        if not order:
-            self.txt_bill.insert(END, f"\n   No pending orders for Table {table}.")
-            self.btn_pay.config(state=DISABLED)
-        else:
-            self.active_bill_id, total = order[0], order[1]
-            self.cursor.execute(
-                "SELECT m.name, oi.quantity, m.price, (oi.quantity * m.price) "
-                "FROM order_items oi JOIN menu_items m ON oi.item_id=m.item_id "
-                "WHERE oi.order_id=%s", (self.active_bill_id,))
-            items = self.cursor.fetchall()
-
-            res  = f"{'RESTROCORE BILLING':^60}\n"
-            res += f" Table: {table:<10} | Order ID: {self.active_bill_id}\n"
-            res += "-" * 60 + "\n"
-            res += f" {'Item':<25} {'Qty':<8} {'Price':<10} {'Sub'}\n"
-            res += "-" * 60 + "\n"
-            for item in items:
-                res += f" {item[0][:24]:<25} {item[1]:<8} ${item[2]:<9} ${item[3]}\n"
-            res += "-" * 60 + "\n"
-            res += f" {'TOTAL DUE:':<44} ${total}\n"
-            res += "=" * 60 + "\n"
-
-            self.txt_bill.insert(END, res)
+        
+        if order:
+            self.active_bill_id = order[0]
+            self.txt_bill.insert(END, f"Order ID: {order[0]}\nTable: {table}\nTotal Due: ${order[1]}\n")
             self.btn_pay.config(state=NORMAL)
-
+        else:
+            self.txt_bill.insert(END, "No pending orders.")
+            self.btn_pay.config(state=DISABLED)
         self.txt_bill.config(state=DISABLED)
 
     def checkout(self):
-        try:
-            self.cursor.execute(
-                "UPDATE orders SET status='Paid' WHERE order_id=%s",
-                (self.active_bill_id,))
-            self.conn.commit()
-            Messagebox.show_info("Table Cleared.", "Success")
-            self.generate_bill()
-        except Exception as e:
-            self.conn.rollback()
-            Messagebox.show_error(str(e), "Error")
+        self.cursor.execute("UPDATE orders SET status='Paid' WHERE order_id=%s", (self.active_bill_id,))
+        self.conn.commit()
+        Messagebox.show_info("Payment Complete", "Success")
+        self.generate_bill()
 
     # ─────────────────────────── STAFF TAB ───────────────────────────
     def setup_staff_tab(self):
         form = tb.Frame(self.tab_staff)
         form.pack(pady=20)
         self.staff_entries = []
-        for i, label in enumerate(["Full Name:", "Position:", "Username:", "Password:"]):
-            tb.Label(form, text=label).grid(row=i, column=0, padx=5, pady=8, sticky=E)
-            e = tb.Entry(form, width=30)
-            if "Password" in label:
-                e.config(show="*")
-            e.grid(row=i, column=1, padx=5, pady=8)
+        labels = ["Full Name:", "Position:", "Username:", "Password:"]
+        for i, lbl in enumerate(labels):
+            tb.Label(form, text=lbl).grid(row=i, column=0, sticky=E, padx=5, pady=5)
+            e = tb.Entry(form, width=25, show="*" if "Password" in lbl else "")
+            e.grid(row=i, column=1, padx=5, pady=5)
             self.staff_entries.append(e)
-        tb.Button(form, text="Register Employee", bootstyle=PRIMARY,
-                  command=self.add_staff).grid(row=4, columnspan=2, pady=20)
+        tb.Button(form, text="Add Staff", command=self.add_staff).grid(row=4, columnspan=2, pady=10)
 
     def add_staff(self):
         vals = [e.get() for e in self.staff_entries]
-        if not all(vals):
-            return
-        try:
-            self.cursor.execute(
-                "INSERT INTO employees (name, role, username, password) "
-                "VALUES (%s,%s,%s,%s)", vals)
+        if all(vals):
+            self.cursor.execute("INSERT INTO employees (name, role, username, password) VALUES (%s,%s,%s,%s)", vals)
             self.conn.commit()
-            Messagebox.show_info("Staff Registered", "Success")
-            for e in self.staff_entries:
-                e.delete(0, END)
-        except Exception as e:
-            self.conn.rollback()
-            Messagebox.show_error(str(e), "DB Error")
+            Messagebox.show_info("Staff Added", "Success")
 
-    # ─────────────────────────── MISC ────────────────────────────────
+    # ─────────────────────────── LOGOUT & CLOSING ────────────────────
     def logout(self):
-        self.order_cart.clear()
+        # Reset state
+        self.order_cart = []
+        self.thumb_refs = {}
+        if hasattr(self, '_order_tab_ready'):
+            del self._order_tab_ready
+        
+        # Destroy all current UI
         for w in self.root.winfo_children():
             w.destroy()
+        
+        # Rebuild login
         self.build_login_screen()
 
     def on_closing(self):
         if hasattr(self, 'conn'):
             self.conn.close()
         self.root.destroy()
-
 
 if __name__ == "__main__":
     app_root = tb.Window(themename="cyborg")
