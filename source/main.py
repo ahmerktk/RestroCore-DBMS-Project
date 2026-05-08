@@ -12,9 +12,9 @@ except ImportError:
 
 # Database configuration
 DB_CONFIG = {
-    "dbname": "restaurant_pos",
+    "dbname": "RestroCore",
     "user": "postgres",
-    "password": "umar1234gul",
+    "password": "66147",
     "host": "localhost",
     "port": "5432"
 }
