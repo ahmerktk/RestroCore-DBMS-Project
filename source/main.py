@@ -600,7 +600,6 @@ class RestroCoreApp:
             self.conn.close()
         self.root.destroy()
 
-
 if __name__ == "__main__":
     app_root = tb.Window(themename="cyborg")
     app = RestroCoreApp(app_root)
@@ -619,3 +618,5 @@ if __name__ == "__main__":
             app_root.destroy()
         except tb.TclError:
             pass # Window was already destroyed
+
+
