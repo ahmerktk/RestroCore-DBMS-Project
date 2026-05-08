@@ -3,6 +3,7 @@ from ttkbootstrap.constants import *
 from ttkbootstrap.dialogs import Messagebox
 import psycopg2
 import os
+from datetime import datetime
 
 try:
     from PIL import Image, ImageTk
@@ -10,14 +11,15 @@ try:
 except ImportError:
     HAS_PIL = False
 
-# Database configuration
+# ─── Database configuration ──────────────────────────────────────────────────
 DB_CONFIG = {
-    "dbname": "RestroCore",
+    "dbname": "restaurant_pos",
     "user": "postgres",
-    "password": "66147",
+    "password": "umar1234gul",
     "host": "localhost",
     "port": "5432"
 }
+
 
 class RestroCoreApp:
     def __init__(self, root):
@@ -33,6 +35,7 @@ class RestroCoreApp:
         self.menu_data       = {}
         self.order_cart      = []
         self.thumb_refs      = {}
+        self.active_bill_id  = None
 
         # Database Connection
         try:
@@ -46,13 +49,13 @@ class RestroCoreApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.build_login_screen()
 
-    # ─────────────────────────── LOGIN ───────────────────────────
+    # ═══════════════════════════════ LOGIN ═══════════════════════════════════
     def build_login_screen(self):
         for w in self.root.winfo_children():
             w.destroy()
 
-        self.login_frame = tb.Frame(self.root, padding=40)
-        self.login_frame.pack(expand=True)
+        self.login_frame = tb.Frame(self.root)
+        self.login_frame.pack(expand=True, padx=40, pady=40)
 
         tb.Label(self.login_frame, text="RestroCore",
                  font=("Helvetica", 36, "bold"), bootstyle=INFO).pack(pady=10)
@@ -85,46 +88,65 @@ class RestroCoreApp:
             if user:
                 self.current_user = {"id": user[0], "name": user[1], "role": user[2]}
                 self.root.unbind('<Return>')
+                # Log the login activity
+                self._log_activity(user[0], "LOGIN", f"User '{user[1]}' logged in.")
                 self.build_main_dashboard()
             else:
                 Messagebox.show_error("Invalid username or password.", "Login Failed")
         except Exception as e:
+            self._safe_rollback()
             Messagebox.show_error(f"Login Error: {e}", "Error")
 
-    # ─────────────────────────── DASHBOARD ───────────────────────────
+    # ═══════════════════════════════ DASHBOARD ═══════════════════════════════
     def build_main_dashboard(self):
         for w in self.root.winfo_children():
             w.destroy()
 
-        header = tb.Frame(self.root, bootstyle=DARK, padding=15)
+        header = tb.Frame(self.root, bootstyle=DARK)
         header.pack(fill=X)
         tb.Label(header,
                  text=f"👤 {self.current_user['name']} | Role: {self.current_user['role']}",
-                 font=("Helvetica", 12), bootstyle=INVERSE).pack(side=LEFT)
+                 font=("Helvetica", 12), bootstyle=INVERSE).pack(side=LEFT, padx=15, pady=10)
         tb.Button(header, text="Logout", bootstyle=(DANGER, OUTLINE),
-                  command=self.logout).pack(side=RIGHT)
+                  command=self.logout).pack(side=RIGHT, padx=15, pady=10)
 
         self.tab_control = tb.Notebook(self.root, bootstyle=INFO)
         self.tab_control.pack(expand=True, fill=BOTH, padx=20, pady=20)
 
-        self.tab_menu    = tb.Frame(self.tab_control, padding=10)
-        self.tab_orders  = tb.Frame(self.tab_control, padding=10)
-        self.tab_billing = tb.Frame(self.tab_control, padding=10)
+        role = self.current_user['role'].lower()
+
+        # ── Tabs visible to all roles ──
+        self.tab_menu    = tb.Frame(self.tab_control)
+        self.tab_orders  = tb.Frame(self.tab_control)
+        self.tab_billing = tb.Frame(self.tab_control)
 
         self.tab_control.add(self.tab_menu,    text='📋 Menu & Inventory')
         self.tab_control.add(self.tab_orders,  text='🍔 Place Order')
         self.tab_control.add(self.tab_billing, text='💳 Billing')
 
-        if self.current_user['role'].lower() == 'manager':
-            self.tab_staff = tb.Frame(self.tab_control, padding=10)
-            self.tab_control.add(self.tab_staff, text='👥 Staff Management')
+        # ── Manager-only tabs ──
+        if role == 'manager':
+            self.tab_stock  = tb.Frame(self.tab_control)
+            self.tab_staff  = tb.Frame(self.tab_control)
+            self.tab_actlog = tb.Frame(self.tab_control)
+            self.tab_control.add(self.tab_stock,  text='📦 Stock Management')
+            self.tab_control.add(self.tab_staff,  text='👥 Staff Management')
+            self.tab_control.add(self.tab_actlog, text='📜 Activity Log')
+            self.setup_stock_tab()
             self.setup_staff_tab()
+            self.setup_activity_log_tab()
+
+        # ── Chef-only tab ──
+        if role == 'chef':
+            self.tab_kitchen = tb.Frame(self.tab_control)
+            self.tab_control.add(self.tab_kitchen, text='🍳 Kitchen Orders')
+            self.setup_kitchen_tab()
 
         self.setup_menu_tab()
         self.setup_order_tab()
         self.setup_billing_tab()
 
-    # ─────────────────────────── MENU TAB ───────────────────────────
+    # ═══════════════════════════════ MENU TAB ════════════════════════════════
     def setup_menu_tab(self):
         container = tb.Frame(self.tab_menu)
         container.pack(fill=BOTH, expand=True)
@@ -161,10 +183,15 @@ class RestroCoreApp:
         for i in self.tree_menu.get_children():
             self.tree_menu.delete(i)
 
-        self.cursor.execute(
-            "SELECT item_id, name, price, stock_level, image_path "
-            "FROM menu_items ORDER BY item_id")
-        rows = self.cursor.fetchall()
+        try:
+            self.cursor.execute(
+                "SELECT item_id, name, price, stock_level, image_path "
+                "FROM menu_items ORDER BY item_id")
+            rows = self.cursor.fetchall()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Error loading menu:\n{e}", "Database Error")
+            return
 
         self.menu_data = {}
         for item_id, name, price, stock, image_path in rows:
@@ -178,9 +205,14 @@ class RestroCoreApp:
         if hasattr(self, '_order_tab_ready'):
             self.build_food_cards()
 
+        # Refresh stock tab if open
+        if hasattr(self, 'tree_stock'):
+            self._load_stock_tree()
+
     def on_menu_select(self, event):
         sel = self.tree_menu.selection()
-        if not sel: return
+        if not sel:
+            return
 
         item_id = str(self.tree_menu.item(sel[0])['values'][0])
         img_path = self.menu_image_map.get(item_id)
@@ -191,11 +223,142 @@ class RestroCoreApp:
                 self.placeholder_img = ImageTk.PhotoImage(img)
                 self.img_label.config(image=self.placeholder_img, text="")
                 return
-            except Exception: pass
+            except Exception:
+                pass
 
         self.img_label.config(image='', text="No Image Available")
 
-    # ─────────────────────────── ORDER TAB ───────────────────────────
+    # ═══════════════════════════ STOCK MANAGEMENT TAB (Manager only) ═════════
+    def setup_stock_tab(self):
+        """Allows manager to view and increase stock levels for any menu item."""
+        top = tb.Frame(self.tab_stock)
+        top.pack(fill=X, padx=10, pady=10)
+
+        tb.Label(top, text="Stock Management",
+                 font=("Helvetica", 16, "bold"), bootstyle=INFO).pack(side=LEFT)
+        tb.Button(top, text="↻ Refresh", bootstyle=INFO,
+                  command=self._load_stock_tree).pack(side=RIGHT)
+
+        # ── Tree ──
+        cols = ('id', 'name', 'price', 'stock')
+        self.tree_stock = tb.Treeview(self.tab_stock, columns=cols,
+                                      show='headings', bootstyle=PRIMARY)
+        self.tree_stock.heading('id',    text='ID')
+        self.tree_stock.heading('name',  text='Item Name')
+        self.tree_stock.heading('price', text='Price')
+        self.tree_stock.heading('stock', text='Current Stock')
+        self.tree_stock.column('id',    width=50,  anchor=CENTER)
+        self.tree_stock.column('name',  width=280)
+        self.tree_stock.column('price', width=90,  anchor=CENTER)
+        self.tree_stock.column('stock', width=120, anchor=CENTER)
+        self.tree_stock.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
+
+        # ── Update form ──
+        update_frame = tb.LabelFrame(self.tab_stock, text=" Update Stock Level ")
+        update_frame.pack(fill=X, padx=10, pady=10)
+
+        row1 = tb.Frame(update_frame)
+        row1.pack(fill=X, padx=10, pady=(10,4))
+
+        tb.Label(row1, text="Selected Item:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
+        self.lbl_stock_item = tb.Label(row1, text="(click a row above)",
+                                       font=("Helvetica", 11, "italic"), bootstyle=WARNING)
+        self.lbl_stock_item.pack(side=LEFT)
+
+        row2 = tb.Frame(update_frame)
+        row2.pack(fill=X, padx=10, pady=(4,10))
+
+        tb.Label(row2, text="Add Quantity:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
+        self.ent_stock_add = tb.Entry(row2, width=10, font=("Helvetica", 11))
+        self.ent_stock_add.pack(side=LEFT, padx=(0, 10))
+
+        tb.Label(row2, text="Set Absolute:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
+        self.ent_stock_set = tb.Entry(row2, width=10, font=("Helvetica", 11))
+        self.ent_stock_set.pack(side=LEFT, padx=(0, 20))
+
+        tb.Button(row2, text="➕ Add Stock",  bootstyle=SUCCESS,
+                  command=self._add_stock).pack(side=LEFT, padx=4)
+        tb.Button(row2, text="✏️ Set Stock",  bootstyle=WARNING,
+                  command=self._set_stock).pack(side=LEFT, padx=4)
+
+        self.tree_stock.bind('<<TreeviewSelect>>', self._on_stock_select)
+        self._selected_stock_id = None
+        self._load_stock_tree()
+
+    def _load_stock_tree(self):
+        if not hasattr(self, 'tree_stock'):
+            return
+        for i in self.tree_stock.get_children():
+            self.tree_stock.delete(i)
+        try:
+            self.cursor.execute(
+                "SELECT item_id, name, price, stock_level FROM menu_items ORDER BY item_id")
+            for row in self.cursor.fetchall():
+                self.tree_stock.insert('', END, values=row)
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Error loading stock:\n{e}", "DB Error")
+
+    def _on_stock_select(self, event):
+        sel = self.tree_stock.selection()
+        if not sel:
+            return
+        vals = self.tree_stock.item(sel[0])['values']
+        self._selected_stock_id   = vals[0]
+        self._selected_stock_name = vals[1]
+        self.lbl_stock_item.config(text=f"{vals[1]}  (current stock: {vals[3]})")
+
+    def _add_stock(self):
+        if not self._selected_stock_id:
+            Messagebox.show_warning("Please select an item first.", "No Item Selected")
+            return
+        val = self.ent_stock_add.get().strip()
+        if not val.isdigit() or int(val) <= 0:
+            Messagebox.show_warning("Enter a positive integer to add.", "Invalid Input")
+            return
+        qty = int(val)
+        try:
+            self.cursor.execute(
+                "UPDATE menu_items SET stock_level = stock_level + %s WHERE item_id = %s",
+                (qty, self._selected_stock_id))
+            self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "STOCK_ADD",
+                f"Added {qty} units to '{self._selected_stock_name}' (item_id={self._selected_stock_id}).")
+            Messagebox.show_info(f"Added {qty} units to '{self._selected_stock_name}'.", "Stock Updated")
+            self.ent_stock_add.delete(0, END)
+            self._load_stock_tree()
+            self.load_menu_data()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Failed to update stock:\n{e}", "DB Error")
+
+    def _set_stock(self):
+        if not self._selected_stock_id:
+            Messagebox.show_warning("Please select an item first.", "No Item Selected")
+            return
+        val = self.ent_stock_set.get().strip()
+        if not val.isdigit():
+            Messagebox.show_warning("Enter a non-negative integer.", "Invalid Input")
+            return
+        qty = int(val)
+        try:
+            self.cursor.execute(
+                "UPDATE menu_items SET stock_level = %s WHERE item_id = %s",
+                (qty, self._selected_stock_id))
+            self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "STOCK_SET",
+                f"Set stock of '{self._selected_stock_name}' to {qty} (item_id={self._selected_stock_id}).")
+            Messagebox.show_info(f"'{self._selected_stock_name}' stock set to {qty}.", "Stock Updated")
+            self.ent_stock_set.delete(0, END)
+            self._load_stock_tree()
+            self.load_menu_data()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Failed to set stock:\n{e}", "DB Error")
+
+    # ═══════════════════════════ ORDER TAB ═══════════════════════════════════
     def setup_order_tab(self):
         top_bar = tb.Frame(self.tab_orders)
         top_bar.pack(fill=X, pady=(0, 8))
@@ -208,7 +371,6 @@ class RestroCoreApp:
         self.search_var = tb.StringVar()
         self.search_var.trace_add("write", lambda *a: self.build_food_cards())
         tb.Entry(top_bar, textvariable=self.search_var, width=16, font=("Helvetica", 11)).pack(side=LEFT)
-
         tb.Button(top_bar, text="↻ Refresh", bootstyle=INFO, command=self.load_menu_data).pack(side=RIGHT)
 
         main = tb.Frame(self.tab_orders)
@@ -221,21 +383,25 @@ class RestroCoreApp:
         tb.Label(right_panel, text="🛒  Cart", font=("Helvetica", 12, "bold")).pack(anchor=W, pady=(0, 4))
 
         cart_cols = ('name', 'qty', 'sub')
-        self.tree_cart = tb.Treeview(right_panel, columns=cart_cols, show='headings', bootstyle=SUCCESS, height=16)
+        self.tree_cart = tb.Treeview(right_panel, columns=cart_cols,
+                                     show='headings', bootstyle=SUCCESS, height=16)
         self.tree_cart.heading('name', text='Item')
-        self.tree_cart.heading('qty', text='Qty')
-        self.tree_cart.heading('sub', text='Subtotal')
+        self.tree_cart.heading('qty',  text='Qty')
+        self.tree_cart.heading('sub',  text='Subtotal')
         self.tree_cart.column('name', width=140)
-        self.tree_cart.column('qty', width=50, anchor=CENTER)
-        self.tree_cart.column('sub', width=90, anchor=E)
+        self.tree_cart.column('qty',  width=50,  anchor=CENTER)
+        self.tree_cart.column('sub',  width=90,  anchor=E)
         self.tree_cart.pack(fill=BOTH, expand=True)
 
-        tb.Button(right_panel, text="✕ Remove Selected", bootstyle=(DANGER, OUTLINE), command=self.remove_cart_item).pack(fill=X, pady=(6, 2))
+        tb.Button(right_panel, text="✕ Remove Selected",
+                  bootstyle=(DANGER, OUTLINE), command=self.remove_cart_item).pack(fill=X, pady=(6, 2))
 
-        self.lbl_total = tb.Label(right_panel, text="Total: $0.00", font=("Helvetica", 12, "bold"), bootstyle=WARNING)
+        self.lbl_total = tb.Label(right_panel, text="Total: $0.00",
+                                  font=("Helvetica", 12, "bold"), bootstyle=WARNING)
         self.lbl_total.pack(anchor=E, pady=4)
 
-        tb.Button(right_panel, text="✔  Place Order", bootstyle=SUCCESS, command=self.place_order_from_cart).pack(fill=X, pady=(4, 0))
+        tb.Button(right_panel, text="✔  Place Order", bootstyle=SUCCESS,
+                  command=self.place_order_from_cart).pack(fill=X, pady=(4, 0))
 
         left_panel = tb.Frame(main)
         left_panel.pack(side=LEFT, fill=BOTH, expand=True)
@@ -243,22 +409,27 @@ class RestroCoreApp:
         self.cards_canvas = tb.Canvas(left_panel, highlightthickness=0)
         vsb = tb.Scrollbar(left_panel, orient=VERTICAL, command=self.cards_canvas.yview)
         self.cards_canvas.configure(yscrollcommand=vsb.set)
-
         vsb.pack(side=RIGHT, fill=Y)
         self.cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
 
         self.cards_inner = tb.Frame(self.cards_canvas)
         self._canvas_win = self.cards_canvas.create_window((0, 0), window=self.cards_inner, anchor=NW)
 
-        self.cards_inner.bind("<Configure>", lambda e: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")))
-        self.cards_canvas.bind("<Configure>", lambda e: self.cards_canvas.itemconfig(self._canvas_win, width=e.width))
+        self.cards_inner.bind(
+            "<Configure>",
+            lambda e: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")))
+        self.cards_canvas.bind(
+            "<Configure>",
+            lambda e: self.cards_canvas.itemconfig(self._canvas_win, width=e.width))
 
         self._order_tab_ready = True
         self.build_food_cards()
 
     def build_food_cards(self):
-        if not hasattr(self, 'cards_inner'): return
-        for w in self.cards_inner.winfo_children(): w.destroy()
+        if not hasattr(self, 'cards_inner'):
+            return
+        for w in self.cards_inner.winfo_children():
+            w.destroy()
         self.thumb_refs.clear()
 
         search = self.search_var.get().lower()
@@ -267,7 +438,7 @@ class RestroCoreApp:
         COLS = 3
         for idx, (item_id, data) in enumerate(items):
             r, c = divmod(idx, COLS)
-            card = tb.Frame(self.cards_inner, bootstyle=SECONDARY, padding=10)
+            card = tb.Frame(self.cards_inner, bootstyle=SECONDARY)
             card.grid(row=r, column=c, padx=8, pady=8, sticky=NSEW)
             self.cards_inner.columnconfigure(c, weight=1)
 
@@ -278,7 +449,8 @@ class RestroCoreApp:
                     photo = ImageTk.PhotoImage(p_img)
                     self.thumb_refs[item_id] = photo
                     img_lbl.config(image=photo, text="")
-                except: pass
+                except Exception:
+                    pass
             img_lbl.pack(pady=5)
 
             tb.Label(card, text=data['name'], font=("Helvetica", 10, "bold"), justify=CENTER).pack()
@@ -297,7 +469,6 @@ class RestroCoreApp:
                 row['quantity'] += quantity
                 self.refresh_cart_view()
                 return
-
         data = self.menu_data[item_id]
         self.order_cart.append({
             'item_id': item_id, 'name': data['name'],
@@ -306,7 +477,8 @@ class RestroCoreApp:
         self.refresh_cart_view()
 
     def refresh_cart_view(self):
-        for i in self.tree_cart.get_children(): self.tree_cart.delete(i)
+        for i in self.tree_cart.get_children():
+            self.tree_cart.delete(i)
         total = 0.0
         for row in self.order_cart:
             sub = row['price'] * row['quantity']
@@ -324,12 +496,12 @@ class RestroCoreApp:
     def place_order_from_cart(self):
         table = self.ent_table.get().strip()
         if not table.isdigit() or not self.order_cart:
-            Messagebox.show_warning("Invalid table or empty cart", "Warning")
+            Messagebox.show_warning("Invalid table number or empty cart.", "Warning")
             return
-
         try:
             self.cursor.execute(
-                "INSERT INTO orders (table_number, employee_id) VALUES (%s, %s) RETURNING order_id",
+                "INSERT INTO orders (table_number, employee_id, kitchen_status) "
+                "VALUES (%s, %s, 'Waiting') RETURNING order_id",
                 (table, self.current_user['id']))
             order_id = self.cursor.fetchone()[0]
             for row in self.order_cart:
@@ -337,18 +509,20 @@ class RestroCoreApp:
                     "INSERT INTO order_items (order_id, item_id, quantity) VALUES (%s, %s, %s)",
                     (order_id, row['item_id'], row['quantity']))
             self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "ORDER_PLACED",
+                f"Order #{order_id} placed for table {table}.")
             Messagebox.show_info(f"Order #{order_id} placed!", "Success")
             self.order_cart.clear()
             self.refresh_cart_view()
         except Exception as e:
-            self.conn.rollback()
+            self._safe_rollback()
             Messagebox.show_error(str(e), "Error")
 
-    # ─────────────────────────── BILLING TAB ───────────────────────────
+    # ═══════════════════════════ BILLING TAB ═════════════════════════════════
     def setup_billing_tab(self):
         import tkinter as tk
 
-        # ── Top search bar ──
         top = tb.Frame(self.tab_billing)
         top.pack(fill=X, pady=(10, 6), padx=20)
 
@@ -361,8 +535,7 @@ class RestroCoreApp:
                                   state=DISABLED, command=self.checkout)
         self.btn_pay.pack(side=RIGHT, padx=4)
 
-        # ── Receipt card with scrollable canvas ──
-        card_outer = tb.Frame(self.tab_billing, bootstyle=SECONDARY, padding=2)
+        card_outer = tb.Frame(self.tab_billing, bootstyle=SECONDARY)
         card_outer.pack(fill=BOTH, expand=True, padx=40, pady=10)
 
         self.receipt_canvas = tk.Canvas(card_outer, bg="#1e1e2e", highlightthickness=0)
@@ -405,33 +578,27 @@ class RestroCoreApp:
             self._show_receipt_placeholder()
             return
 
-        # --- ADD TRY/EXCEPT WITH ROLLBACK HERE ---
         try:
             self.cursor.execute(
                 "SELECT order_id, total_amount, created_at "
                 "FROM orders WHERE table_number=%s AND status='Pending'",
-                (table,)
-            )
+                (table,))
             order = self.cursor.fetchone()
         except psycopg2.Error as e:
-            self.conn.rollback()  # <--- CRITICAL: Clears the aborted transaction state
+            self._safe_rollback()
             Messagebox.show_error(f"Database error while generating bill:\n{e}", "Database Error")
             return
-        # -----------------------------------------
 
         self._clear_receipt()
-        
-        # ... (rest of your generate_bill code) ...
 
-        # ── Color palette ──
-        BG   = "#1e1e2e"   # dark background
-        CARD = "#252538"   # slightly lighter card rows
-        ACC  = "#7c6af7"   # violet accent
-        GRN  = "#50fa7b"   # green for prices
-        WHT  = "#cdd6f4"   # soft white text
-        DIM  = "#6272a4"   # muted labels
-        RED  = "#ff5555"   # error red
-        ALT  = "#23233a"   # alternating row bg
+        BG   = "#1e1e2e"
+        CARD = "#252538"
+        ACC  = "#7c6af7"
+        GRN  = "#50fa7b"
+        WHT  = "#cdd6f4"
+        DIM  = "#6272a4"
+        RED  = "#ff5555"
+        ALT  = "#23233a"
 
         def lbl(parent, text, fg=WHT, font=("Courier", 10), bg=BG, **kw):
             return tk.Label(parent, text=text, fg=fg, font=font, bg=bg, **kw)
@@ -452,49 +619,40 @@ class RestroCoreApp:
         date_str   = (created_at.strftime("%d %b %Y   %H:%M")
                       if hasattr(created_at, 'strftime') else str(created_at))
 
-        # ── Restaurant header ──
-        lbl(outer, "R E S T R O C O R E", fg=ACC,
-            font=("Courier", 20, "bold")).pack()
-        lbl(outer, "━━━  Fine Dining & Beyond  ━━━",
-            fg=DIM, font=("Courier", 10)).pack(pady=(2, 0))
+        lbl(outer, "R E S T R O C O R E", fg=ACC, font=("Courier", 20, "bold")).pack()
+        lbl(outer, "━━━  Fine Dining & Beyond  ━━━", fg=DIM, font=("Courier", 10)).pack(pady=(2, 0))
         lbl(outer, " ", bg=BG).pack()
 
-        # ── Order meta ──
         meta = tk.Frame(outer, bg=BG)
         meta.pack(fill=X)
-        lbl(meta, f"Order  #  {order_id}", fg=WHT,
-            font=("Courier", 10, "bold")).pack(side=LEFT)
+        lbl(meta, f"Order  #  {order_id}", fg=WHT, font=("Courier", 10, "bold")).pack(side=LEFT)
         lbl(meta, date_str, fg=DIM, font=("Courier", 9)).pack(side=RIGHT)
 
-        lbl(outer, f"Table :  {table}",
-            fg=WHT, font=("Courier", 10)).pack(anchor="w", pady=(4, 0))
-        lbl(outer, f"Server :  {self.current_user['name']}",
-            fg=WHT, font=("Courier", 10)).pack(anchor="w")
+        lbl(outer, f"Table :  {table}", fg=WHT, font=("Courier", 10)).pack(anchor="w", pady=(4, 0))
+        lbl(outer, f"Server :  {self.current_user['name']}", fg=WHT, font=("Courier", 10)).pack(anchor="w")
 
-        # ── Accent divider ──
         tk.Frame(outer, bg=ACC, height=2).pack(fill=X, pady=12)
 
-        # ── Column header row ──
         hdr = tk.Frame(outer, bg=CARD, pady=7, padx=8)
         hdr.pack(fill=X)
-        tk.Label(hdr, text="ITEM", bg=CARD, fg=ACC,
-                 font=("Courier", 10, "bold"), width=28, anchor="w").grid(row=0, column=0, padx=(4,0))
-        tk.Label(hdr, text="QTY", bg=CARD, fg=ACC,
-                 font=("Courier", 10, "bold"), width=6, anchor="center").grid(row=0, column=1)
-        tk.Label(hdr, text="UNIT", bg=CARD, fg=ACC,
-                 font=("Courier", 10, "bold"), width=10, anchor="e").grid(row=0, column=2)
-        tk.Label(hdr, text="SUBTOTAL", bg=CARD, fg=ACC,
-                 font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0,4))
+        tk.Label(hdr, text="ITEM",     bg=CARD, fg=ACC, font=("Courier", 10, "bold"), width=28, anchor="w").grid(row=0, column=0, padx=(4, 0))
+        tk.Label(hdr, text="QTY",      bg=CARD, fg=ACC, font=("Courier", 10, "bold"), width=6,  anchor="center").grid(row=0, column=1)
+        tk.Label(hdr, text="UNIT",     bg=CARD, fg=ACC, font=("Courier", 10, "bold"), width=10, anchor="e").grid(row=0, column=2)
+        tk.Label(hdr, text="SUBTOTAL", bg=CARD, fg=ACC, font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0, 4))
 
-        # ── Fetch line items ──
-        self.cursor.execute("""
-            SELECT mi.name, oi.quantity, mi.price
-            FROM order_items oi
-            JOIN menu_items mi ON oi.item_id = mi.item_id
-            WHERE oi.order_id = %s
-            ORDER BY mi.name
-        """, (order_id,))
-        items = self.cursor.fetchall()
+        try:
+            self.cursor.execute("""
+                SELECT mi.name, oi.quantity, mi.price
+                FROM order_items oi
+                JOIN menu_items mi ON oi.item_id = mi.item_id
+                WHERE oi.order_id = %s
+                ORDER BY mi.name
+            """, (order_id,))
+            items = self.cursor.fetchall()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Error fetching order items:\n{e}", "DB Error")
+            return
 
         running = 0.0
         for i, (name, qty, unit_price) in enumerate(items):
@@ -504,19 +662,13 @@ class RestroCoreApp:
             row_bg = BG if i % 2 == 0 else ALT
             row_f = tk.Frame(outer, bg=row_bg, pady=5, padx=8)
             row_f.pack(fill=X)
-            tk.Label(row_f, text=name[:30], bg=row_bg, fg=WHT,
-                     font=("Courier", 10), width=28, anchor="w").grid(row=0, column=0, padx=(4,0))
-            tk.Label(row_f, text=f"× {qty}", bg=row_bg, fg=DIM,
-                     font=("Courier", 10), width=6, anchor="center").grid(row=0, column=1)
-            tk.Label(row_f, text=f"${unit_price:.2f}", bg=row_bg, fg=DIM,
-                     font=("Courier", 10), width=10, anchor="e").grid(row=0, column=2)
-            tk.Label(row_f, text=f"${sub:.2f}", bg=row_bg, fg=GRN,
-                     font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0,4))
+            tk.Label(row_f, text=name[:30], bg=row_bg, fg=WHT,  font=("Courier", 10), width=28, anchor="w").grid(row=0, column=0, padx=(4, 0))
+            tk.Label(row_f, text=f"× {qty}",       bg=row_bg, fg=DIM,  font=("Courier", 10), width=6,  anchor="center").grid(row=0, column=1)
+            tk.Label(row_f, text=f"${unit_price:.2f}", bg=row_bg, fg=DIM, font=("Courier", 10), width=10, anchor="e").grid(row=0, column=2)
+            tk.Label(row_f, text=f"${sub:.2f}",    bg=row_bg, fg=GRN,  font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0, 4))
 
-        # ── Muted divider ──
         tk.Frame(outer, bg=DIM, height=1).pack(fill=X, pady=12)
 
-        # ── Summary block (subtotal / tax / total) ──
         TAX_RATE = 0.08
         tax_amt  = running * TAX_RATE
         grand    = running + tax_amt
@@ -526,69 +678,483 @@ class RestroCoreApp:
 
         def srow(r, label, value, fg_val=WHT, bold=False):
             f = ("Courier", 10, "bold") if bold else ("Courier", 10)
-            tk.Label(summary, text=label, bg=BG, fg=DIM,
-                     font=f, anchor="e", width=20).grid(row=r, column=0, sticky="e", pady=2)
-            tk.Label(summary, text=value, bg=BG, fg=fg_val,
-                     font=f, anchor="e", width=12).grid(row=r, column=1, sticky="e", pady=2)
+            tk.Label(summary, text=label, bg=BG, fg=DIM, font=f, anchor="e", width=20).grid(row=r, column=0, sticky="e", pady=2)
+            tk.Label(summary, text=value, bg=BG, fg=fg_val, font=f, anchor="e", width=12).grid(row=r, column=1, sticky="e", pady=2)
 
         srow(0, "Subtotal :", f"${running:.2f}")
         srow(1, f"Tax  ({int(TAX_RATE*100)}%) :", f"${tax_amt:.2f}")
 
-        # ── Grand total highlight bar ──
         total_frame = tk.Frame(outer, bg=ACC, pady=12, padx=20)
         total_frame.pack(fill=X, pady=(10, 0))
-        tk.Label(total_frame, text="TOTAL  DUE", bg=ACC, fg="#ffffff",
-                 font=("Courier", 14, "bold")).pack(side=LEFT)
-        tk.Label(total_frame, text=f"  ${grand:.2f}", bg=ACC, fg="#ffffff",
-                 font=("Courier", 18, "bold")).pack(side=RIGHT)
+        tk.Label(total_frame, text="TOTAL  DUE", bg=ACC, fg="#ffffff", font=("Courier", 14, "bold")).pack(side=LEFT)
+        tk.Label(total_frame, text=f"  ${grand:.2f}", bg=ACC, fg="#ffffff", font=("Courier", 18, "bold")).pack(side=RIGHT)
 
-        # ── Footer ──
         lbl(outer, " ", bg=BG).pack()
         tk.Frame(outer, bg=DIM, height=1).pack(fill=X)
-        lbl(outer, "Thank you for dining with us!  🍽️",
-            fg=DIM, font=("Courier", 10, "italic")).pack(pady=(8, 2))
-        lbl(outer, "Please come again  •  RestroCore POS  v1.0",
-            fg=DIM, font=("Courier", 8)).pack()
+        lbl(outer, "Thank you for dining with us!  🍽️", fg=DIM, font=("Courier", 10, "italic")).pack(pady=(8, 2))
+        lbl(outer, "Please come again  •  RestroCore POS  v1.0", fg=DIM, font=("Courier", 8)).pack()
         lbl(outer, " ", bg=BG).pack()
 
-        self.btn_pay.config(state=NORMAL)
+        # Only allow payment if the chef has marked the order as Completed
+        try:
+            self.cursor.execute(
+                "SELECT kitchen_status FROM orders WHERE order_id = %s",
+                (self.active_bill_id,))
+            row = self.cursor.fetchone()
+            kitchen_status = row[0] if row else None
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            kitchen_status = None
+
+        if kitchen_status == "Completed":
+            self.btn_pay.config(state=NORMAL)
+        else:
+            self.btn_pay.config(state=DISABLED)
+            Messagebox.show_warning(
+                "Payment is not allowed yet.\n\n"
+                "The chef must mark this order as  ✅ Completed  "
+                "before it can be billed.",
+                "Order Not Ready")
 
     def checkout(self):
-        self.cursor.execute(
-            "UPDATE orders SET status='Paid' WHERE order_id=%s",
-            (self.active_bill_id,))
-        self.conn.commit()
-        Messagebox.show_info("Payment Complete!  Thank you 🎉", "Success")
-        self._show_receipt_placeholder()
-        self.btn_pay.config(state=DISABLED)
+        try:
+            self.cursor.execute(
+                "UPDATE orders SET status='Paid' WHERE order_id=%s",
+                (self.active_bill_id,))
+            self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "ORDER_PAID",
+                f"Order #{self.active_bill_id} marked as Paid.")
+            Messagebox.show_info("Payment Complete!  Thank you 🎉", "Success")
+            self._show_receipt_placeholder()
+            self.btn_pay.config(state=DISABLED)
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Checkout failed:\n{e}", "DB Error")
 
-    # ─────────────────────────── STAFF TAB ───────────────────────────
+    # ═══════════════════════════ KITCHEN TAB (Chef only) ═════════════════════
+    def setup_kitchen_tab(self):
+        """Chef view: see all non-Completed orders and update their kitchen status."""
+        top = tb.Frame(self.tab_kitchen)
+        top.pack(fill=X, padx=10, pady=10)
+
+        tb.Label(top, text="Kitchen Order Board",
+                 font=("Helvetica", 16, "bold"), bootstyle=WARNING).pack(side=LEFT)
+        tb.Button(top, text="↻ Refresh Orders", bootstyle=INFO,
+                  command=self._load_kitchen_orders).pack(side=RIGHT)
+
+        # ── Filter bar ──
+        filter_frame = tb.Frame(self.tab_kitchen)
+        filter_frame.pack(fill=X, padx=10, pady=(0, 8))
+
+        tb.Label(filter_frame, text="Filter by Status:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
+        self.kitchen_filter_var = tb.StringVar(value="All")
+        for opt in ["All", "Waiting", "In Process", "Completed"]:
+            tb.Radiobutton(filter_frame, text=opt, variable=self.kitchen_filter_var,
+                           value=opt, bootstyle=INFO,
+                           command=self._load_kitchen_orders).pack(side=LEFT, padx=6)
+
+        # ── Order tree ──
+        cols = ('order_id', 'table', 'placed_by', 'placed_at', 'kitchen_status')
+        self.tree_kitchen = tb.Treeview(self.tab_kitchen, columns=cols,
+                                        show='headings', bootstyle=WARNING, height=12)
+        self.tree_kitchen.heading('order_id',       text='Order #')
+        self.tree_kitchen.heading('table',          text='Table')
+        self.tree_kitchen.heading('placed_by',      text='Placed By')
+        self.tree_kitchen.heading('placed_at',      text='Placed At')
+        self.tree_kitchen.heading('kitchen_status', text='Kitchen Status')
+        self.tree_kitchen.column('order_id',       width=80,  anchor=CENTER)
+        self.tree_kitchen.column('table',          width=70,  anchor=CENTER)
+        self.tree_kitchen.column('placed_by',      width=160)
+        self.tree_kitchen.column('placed_at',      width=180, anchor=CENTER)
+        self.tree_kitchen.column('kitchen_status', width=130, anchor=CENTER)
+        self.tree_kitchen.pack(fill=BOTH, expand=False, padx=10, pady=(0, 6))
+
+        self.tree_kitchen.bind('<<TreeviewSelect>>', self._on_kitchen_select)
+
+        # ── Items detail for selected order ──
+        detail_frame = tb.LabelFrame(self.tab_kitchen, text=" Order Items ")
+        detail_frame.pack(fill=X, padx=10, pady=(0, 8))
+
+        dcols = ('item', 'qty')
+        self.tree_kitchen_detail = tb.Treeview(detail_frame, columns=dcols,
+                                               show='headings', bootstyle=SECONDARY, height=5)
+        self.tree_kitchen_detail.heading('item', text='Menu Item')
+        self.tree_kitchen_detail.heading('qty',  text='Qty')
+        self.tree_kitchen_detail.column('item', width=320)
+        self.tree_kitchen_detail.column('qty',  width=80, anchor=CENTER)
+        self.tree_kitchen_detail.pack(fill=X)
+
+        # ── Status update controls ──
+        action_frame = tb.LabelFrame(self.tab_kitchen, text=" Update Status ")
+        action_frame.pack(fill=X, padx=10, pady=(0, 10))
+
+        self.lbl_kitchen_sel = tb.Label(action_frame,
+                                        text="(select an order above to update its status)",
+                                        font=("Helvetica", 11, "italic"), bootstyle=SECONDARY)
+        self.lbl_kitchen_sel.pack(anchor=W, pady=(0, 8))
+
+        btn_row = tb.Frame(action_frame)
+        btn_row.pack(fill=X)
+        tb.Button(btn_row, text="⏳  Mark as Waiting",    bootstyle=(WARNING, OUTLINE), width=22,
+                  command=lambda: self._update_kitchen_status("Waiting")).pack(side=LEFT, padx=4)
+        tb.Button(btn_row, text="🔥  Mark as In Process", bootstyle=(INFO, OUTLINE),    width=22,
+                  command=lambda: self._update_kitchen_status("In Process")).pack(side=LEFT, padx=4)
+        tb.Button(btn_row, text="✅  Mark as Completed",  bootstyle=SUCCESS,            width=22,
+                  command=lambda: self._update_kitchen_status("Completed")).pack(side=LEFT, padx=4)
+
+        self._selected_kitchen_order_id = None
+        self._load_kitchen_orders()
+
+    def _load_kitchen_orders(self):
+        if not hasattr(self, 'tree_kitchen'):
+            return
+        for i in self.tree_kitchen.get_children():
+            self.tree_kitchen.delete(i)
+
+        status_filter = self.kitchen_filter_var.get()
+
+        try:
+            if status_filter == "All":
+                self.cursor.execute("""
+                    SELECT o.order_id, o.table_number, e.name,
+                           o.created_at, o.kitchen_status
+                    FROM orders o
+                    JOIN employees e ON o.employee_id = e.employee_id
+                    WHERE o.status = 'Pending'
+                    ORDER BY
+                        CASE o.kitchen_status
+                            WHEN 'Waiting'    THEN 1
+                            WHEN 'In Process' THEN 2
+                            WHEN 'Completed'  THEN 3
+                            ELSE 4
+                        END,
+                        o.created_at ASC
+                """)
+            else:
+                self.cursor.execute("""
+                    SELECT o.order_id, o.table_number, e.name,
+                           o.created_at, o.kitchen_status
+                    FROM orders o
+                    JOIN employees e ON o.employee_id = e.employee_id
+                    WHERE o.status = 'Pending'
+                      AND o.kitchen_status = %s
+                    ORDER BY o.created_at ASC
+                """, (status_filter,))
+            rows = self.cursor.fetchall()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Error loading kitchen orders:\n{e}", "DB Error")
+            return
+
+        STATUS_ICONS = {
+            "Waiting":    "⏳ Waiting",
+            "In Process": "🔥 In Process",
+            "Completed":  "✅ Completed",
+        }
+        for row in rows:
+            order_id, table, placed_by, created_at, kstatus = row
+            ts = created_at.strftime("%d %b %Y  %H:%M") if hasattr(created_at, 'strftime') else str(created_at)
+            display_status = STATUS_ICONS.get(kstatus, kstatus or "⏳ Waiting")
+            self.tree_kitchen.insert('', END,
+                                     values=(order_id, table, placed_by, ts, display_status))
+
+        # Clear detail panel
+        for i in self.tree_kitchen_detail.get_children():
+            self.tree_kitchen_detail.delete(i)
+        self._selected_kitchen_order_id = None
+        self.lbl_kitchen_sel.config(text="(select an order above to update its status)")
+
+    def _on_kitchen_select(self, event):
+        sel = self.tree_kitchen.selection()
+        if not sel:
+            return
+        vals = self.tree_kitchen.item(sel[0])['values']
+        self._selected_kitchen_order_id = vals[0]
+        self.lbl_kitchen_sel.config(
+            text=f"Selected  →  Order #{vals[0]}  |  Table {vals[1]}  |  Status: {vals[4]}")
+
+        # Load items for this order
+        for i in self.tree_kitchen_detail.get_children():
+            self.tree_kitchen_detail.delete(i)
+        try:
+            self.cursor.execute("""
+                SELECT mi.name, oi.quantity
+                FROM order_items oi
+                JOIN menu_items mi ON oi.item_id = mi.item_id
+                WHERE oi.order_id = %s
+                ORDER BY mi.name
+            """, (self._selected_kitchen_order_id,))
+            for item_name, qty in self.cursor.fetchall():
+                self.tree_kitchen_detail.insert('', END, values=(item_name, qty))
+        except psycopg2.Error as e:
+            self._safe_rollback()
+
+    def _update_kitchen_status(self, new_status):
+        if not self._selected_kitchen_order_id:
+            Messagebox.show_warning("Please select an order first.", "No Order Selected")
+            return
+        try:
+            self.cursor.execute(
+                "UPDATE orders SET kitchen_status = %s WHERE order_id = %s",
+                (new_status, self._selected_kitchen_order_id))
+            self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "KITCHEN_STATUS",
+                f"Order #{self._selected_kitchen_order_id} kitchen status → '{new_status}'.")
+            Messagebox.show_info(
+                f"Order #{self._selected_kitchen_order_id} marked as '{new_status}'.", "Status Updated")
+            self._load_kitchen_orders()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Failed to update status:\n{e}", "DB Error")
+
+    # ═══════════════════════════ STAFF TAB (Manager only) ════════════════════
     def setup_staff_tab(self):
-        form = tb.Frame(self.tab_staff)
-        form.pack(pady=20)
+        # ── Staff list tree ──
+        list_frame = tb.LabelFrame(self.tab_staff, text=" Current Staff ")
+        list_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+        scols = ('id', 'name', 'role', 'username')
+        self.tree_staff = tb.Treeview(list_frame, columns=scols, show='headings',
+                                      bootstyle=PRIMARY, height=10)
+        self.tree_staff.heading('id',       text='ID')
+        self.tree_staff.heading('name',     text='Full Name')
+        self.tree_staff.heading('role',     text='Role')
+        self.tree_staff.heading('username', text='Username')
+        self.tree_staff.column('id',       width=50,  anchor=CENTER)
+        self.tree_staff.column('name',     width=200)
+        self.tree_staff.column('role',     width=120)
+        self.tree_staff.column('username', width=150)
+        self.tree_staff.pack(fill=BOTH, expand=True)
+
+        btn_row = tb.Frame(list_frame)
+        btn_row.pack(fill=X, pady=(8, 0))
+        tb.Button(btn_row, text="↻ Refresh Staff", bootstyle=INFO,
+                  command=self._load_staff_list).pack(side=LEFT, padx=4)
+        tb.Button(btn_row, text="🗑 Remove Selected", bootstyle=(DANGER, OUTLINE),
+                  command=self._remove_staff).pack(side=LEFT, padx=4)
+
+        # ── Add staff form ──
+        form_frame = tb.LabelFrame(self.tab_staff, text=" Add New Staff ")
+        form_frame.pack(fill=X, padx=10, pady=(0, 10))
+
+        form = tb.Frame(form_frame)
+        form.pack()
         self.staff_entries = []
         labels = ["Full Name:", "Position:", "Username:", "Password:"]
-        for i, lbl in enumerate(labels):
-            tb.Label(form, text=lbl).grid(row=i, column=0, sticky=E, padx=5, pady=5)
-            e = tb.Entry(form, width=25, show="*" if "Password" in lbl else "")
+        for i, lbl_text in enumerate(labels):
+            tb.Label(form, text=lbl_text).grid(row=i, column=0, sticky=E, padx=5, pady=5)
+            e = tb.Entry(form, width=25, show="*" if "Password" in lbl_text else "")
             e.grid(row=i, column=1, padx=5, pady=5)
             self.staff_entries.append(e)
-        tb.Button(form, text="Add Staff", command=self.add_staff).grid(row=4, columnspan=2, pady=10)
+        tb.Button(form, text="➕  Add Staff", bootstyle=SUCCESS,
+                  command=self.add_staff).grid(row=4, columnspan=2, pady=10)
+
+        self._load_staff_list()
+
+    def _load_staff_list(self):
+        if not hasattr(self, 'tree_staff'):
+            return
+        for i in self.tree_staff.get_children():
+            self.tree_staff.delete(i)
+        try:
+            self.cursor.execute(
+                "SELECT employee_id, name, role, username FROM employees ORDER BY employee_id")
+            for row in self.cursor.fetchall():
+                self.tree_staff.insert('', END, values=row)
+        except psycopg2.Error as e:
+            self._safe_rollback()
 
     def add_staff(self):
-        vals = [e.get() for e in self.staff_entries]
-        if all(vals):
+        vals = [e.get().strip() for e in self.staff_entries]
+        if not all(vals):
+            Messagebox.show_warning("All fields are required.", "Missing Data")
+            return
+        try:
             self.cursor.execute(
-                "INSERT INTO employees (name, role, username, password) VALUES (%s,%s,%s,%s)", vals)
+                "INSERT INTO employees (name, role, username, password) VALUES (%s,%s,%s,%s)",
+                vals)
             self.conn.commit()
-            Messagebox.show_info("Staff Added", "Success")
+            self._log_activity(
+                self.current_user['id'], "STAFF_ADDED",
+                f"New staff added: '{vals[0]}' (role={vals[1]}, username={vals[2]}).")
+            Messagebox.show_info(f"Staff '{vals[0]}' added successfully.", "Success")
+            for e in self.staff_entries:
+                e.delete(0, END)
+            self._load_staff_list()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Failed to add staff:\n{e}", "DB Error")
 
-    # ─────────────────────────── LOGOUT & CLOSING ────────────────────
+    def _remove_staff(self):
+        sel = self.tree_staff.selection()
+        if not sel:
+            Messagebox.show_warning("Select a staff member to remove.", "No Selection")
+            return
+        vals = self.tree_staff.item(sel[0])['values']
+        emp_id, emp_name = vals[0], vals[1]
+
+        if emp_id == self.current_user['id']:
+            Messagebox.show_error("You cannot remove yourself.", "Not Allowed")
+            return
+
+        confirm = Messagebox.yesno(
+            f"Remove '{emp_name}' (ID: {emp_id})?\nThis cannot be undone.", "Confirm Remove")
+        if not confirm:
+            return
+
+        try:
+            self.cursor.execute(
+                "DELETE FROM employees WHERE employee_id = %s", (emp_id,))
+            self.conn.commit()
+            self._log_activity(
+                self.current_user['id'], "STAFF_REMOVED",
+                f"Staff removed: '{emp_name}' (employee_id={emp_id}).")
+            Messagebox.show_info(f"'{emp_name}' has been removed.", "Removed")
+            self._load_staff_list()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Cannot remove staff (may have linked orders):\n{e}", "DB Error")
+
+    # ═══════════════════════════ ACTIVITY LOG TAB (Manager only) ════════════
+    def setup_activity_log_tab(self):
+        """Shows a full activity log of staff additions/removals and key actions."""
+        top = tb.Frame(self.tab_actlog)
+        top.pack(fill=X, padx=10, pady=10)
+
+        tb.Label(top, text="Activity Log",
+                 font=("Helvetica", 16, "bold"), bootstyle=INFO).pack(side=LEFT)
+
+        right_controls = tb.Frame(top)
+        right_controls.pack(side=RIGHT)
+
+        tb.Label(right_controls, text="Filter:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 4))
+        self.log_filter_var = tb.StringVar(value="All")
+        log_categories = ["All", "LOGIN", "STAFF_ADDED", "STAFF_REMOVED",
+                          "ORDER_PLACED", "ORDER_PAID", "STOCK_ADD", "STOCK_SET",
+                          "KITCHEN_STATUS"]
+        self.log_filter_cb = tb.Combobox(right_controls, textvariable=self.log_filter_var,
+                                         values=log_categories, width=16, state='readonly')
+        self.log_filter_cb.pack(side=LEFT, padx=(0, 8))
+        self.log_filter_cb.bind("<<ComboboxSelected>>", lambda e: self._load_activity_log())
+
+        tb.Button(right_controls, text="↻ Refresh", bootstyle=INFO,
+                  command=self._load_activity_log).pack(side=LEFT)
+
+        # ── Log tree ──
+        cols = ('log_id', 'timestamp', 'employee', 'action', 'details')
+        self.tree_actlog = tb.Treeview(self.tab_actlog, columns=cols,
+                                       show='headings', bootstyle=INFO)
+        self.tree_actlog.heading('log_id',    text='#')
+        self.tree_actlog.heading('timestamp', text='Timestamp')
+        self.tree_actlog.heading('employee',  text='Employee')
+        self.tree_actlog.heading('action',    text='Action')
+        self.tree_actlog.heading('details',   text='Details')
+        self.tree_actlog.column('log_id',    width=50,  anchor=CENTER)
+        self.tree_actlog.column('timestamp', width=170, anchor=CENTER)
+        self.tree_actlog.column('employee',  width=150)
+        self.tree_actlog.column('action',    width=140)
+        self.tree_actlog.column('details',   width=500)
+
+        vsb = tb.Scrollbar(self.tab_actlog, orient=VERTICAL, command=self.tree_actlog.yview)
+        self.tree_actlog.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=RIGHT, fill=Y, padx=(0, 10))
+        self.tree_actlog.pack(fill=BOTH, expand=True, padx=(10, 0), pady=(0, 10))
+
+        # ── Action badges ──
+        ACTION_COLORS = {
+            "STAFF_ADDED":    "success",
+            "STAFF_REMOVED":  "danger",
+            "LOGIN":          "info",
+            "ORDER_PLACED":   "primary",
+            "ORDER_PAID":     "success",
+            "STOCK_ADD":      "warning",
+            "STOCK_SET":      "warning",
+            "KITCHEN_STATUS": "secondary",
+        }
+        legend = tb.Frame(self.tab_actlog)
+        legend.pack(fill=X, padx=10, pady=(0, 6))
+        for action, color in ACTION_COLORS.items():
+            tb.Label(legend, text=f" {action} ", bootstyle=color,
+                     font=("Helvetica", 8)).pack(side=LEFT, padx=2)
+
+        self._load_activity_log()
+
+    def _load_activity_log(self):
+        if not hasattr(self, 'tree_actlog'):
+            return
+        for i in self.tree_actlog.get_children():
+            self.tree_actlog.delete(i)
+
+        action_filter = self.log_filter_var.get()
+        try:
+            if action_filter == "All":
+                self.cursor.execute("""
+                    SELECT al.log_id, al.created_at, e.name, al.action, al.details
+                    FROM activity_log al
+                    LEFT JOIN employees e ON al.employee_id = e.employee_id
+                    ORDER BY al.log_id DESC
+                    LIMIT 500
+                """)
+            else:
+                self.cursor.execute("""
+                    SELECT al.log_id, al.created_at, e.name, al.action, al.details
+                    FROM activity_log al
+                    LEFT JOIN employees e ON al.employee_id = e.employee_id
+                    WHERE al.action = %s
+                    ORDER BY al.log_id DESC
+                    LIMIT 500
+                """, (action_filter,))
+            rows = self.cursor.fetchall()
+        except psycopg2.Error as e:
+            self._safe_rollback()
+            Messagebox.show_error(f"Error loading activity log:\n{e}", "DB Error")
+            return
+
+        for row in rows:
+            log_id, ts, emp_name, action, details = row
+            ts_str = ts.strftime("%d %b %Y  %H:%M:%S") if hasattr(ts, 'strftime') else str(ts)
+            self.tree_actlog.insert('', END,
+                                    values=(log_id, ts_str, emp_name or "—", action, details))
+
+    # ═══════════════════════════ HELPERS ═════════════════════════════════════
+    def _log_activity(self, employee_id, action, details):
+        """Insert a row into activity_log. Silently ignores failure so it never
+        blocks the main workflow."""
+        try:
+            self.cursor.execute(
+                "INSERT INTO activity_log (employee_id, action, details) "
+                "VALUES (%s, %s, %s)",
+                (employee_id, action, details))
+            self.conn.commit()
+        except Exception:
+            self._safe_rollback()
+
+    def _safe_rollback(self):
+        """Rollback any aborted transaction without raising."""
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+
+    # ═══════════════════════════ LOGOUT & CLOSING ════════════════════════════
     def logout(self):
-        self.order_cart = []
-        self.thumb_refs = {}
-        if hasattr(self, '_order_tab_ready'):
-            del self._order_tab_ready
+        if self.current_user:
+            self._log_activity(
+                self.current_user['id'], "LOGOUT",
+                f"User '{self.current_user['name']}' logged out.")
+
+        self.order_cart      = []
+        self.thumb_refs      = {}
+        self.current_user    = None
+        self.active_bill_id  = None
+        self.menu_data       = {}
+        self.menu_image_map  = {}
+
+        for attr in ('_order_tab_ready', '_selected_stock_id', '_selected_kitchen_order_id'):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
         for w in self.root.winfo_children():
             w.destroy()
@@ -596,27 +1162,34 @@ class RestroCoreApp:
         self.build_login_screen()
 
     def on_closing(self):
-        if hasattr(self, 'conn'):
-            self.conn.close()
+        if self.current_user:
+            self._log_activity(
+                self.current_user['id'], "LOGOUT",
+                f"User '{self.current_user['name']}' closed the application.")
+        if hasattr(self, 'conn') and self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
         self.root.destroy()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app_root = tb.Window(themename="cyborg")
     app = RestroCoreApp(app_root)
-    
     try:
-        # Start the application loop inside the protected block
         app_root.mainloop()
     except KeyboardInterrupt:
         print("\nProgram stopped by user via terminal (Ctrl+C).")
     finally:
-        # Emergency cleanup if closed via terminal instead of the 'X' button
         if hasattr(app, 'conn') and app.conn:
-            app.conn.close()
-            print("Database connection safely closed.")
+            try:
+                app.conn.close()
+                print("Database connection safely closed.")
+            except Exception:
+                pass
         try:
             app_root.destroy()
-        except tb.TclError:
-            pass # Window was already destroyed
-
-
+        except Exception:
+            pass
