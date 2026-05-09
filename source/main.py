@@ -4,6 +4,7 @@ from ttkbootstrap.dialogs import Messagebox
 import psycopg2
 import os
 from datetime import datetime
+from cloud_service import sync_to_cloud, update_cloud_status   # ← added update_cloud_status
 
 try:
     from PIL import Image, ImageTk
@@ -88,7 +89,6 @@ class RestroCoreApp:
             if user:
                 self.current_user = {"id": user[0], "name": user[1], "role": user[2]}
                 self.root.unbind('<Return>')
-                # Log the login activity
                 self._log_activity(user[0], "LOGIN", f"User '{user[1]}' logged in.")
                 self.build_main_dashboard()
             else:
@@ -205,7 +205,6 @@ class RestroCoreApp:
         if hasattr(self, '_order_tab_ready'):
             self.build_food_cards()
 
-        # Refresh stock tab if open
         if hasattr(self, 'tree_stock'):
             self._load_stock_tree()
 
@@ -230,7 +229,6 @@ class RestroCoreApp:
 
     # ═══════════════════════════ STOCK MANAGEMENT TAB (Manager only) ═════════
     def setup_stock_tab(self):
-        """Allows manager to view and increase stock levels for any menu item."""
         top = tb.Frame(self.tab_stock)
         top.pack(fill=X, padx=10, pady=10)
 
@@ -239,7 +237,6 @@ class RestroCoreApp:
         tb.Button(top, text="↻ Refresh", bootstyle=INFO,
                   command=self._load_stock_tree).pack(side=RIGHT)
 
-        # ── Tree ──
         cols = ('id', 'name', 'price', 'stock')
         self.tree_stock = tb.Treeview(self.tab_stock, columns=cols,
                                       show='headings', bootstyle=PRIMARY)
@@ -253,12 +250,11 @@ class RestroCoreApp:
         self.tree_stock.column('stock', width=120, anchor=CENTER)
         self.tree_stock.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
 
-        # ── Update form ──
         update_frame = tb.LabelFrame(self.tab_stock, text=" Update Stock Level ")
         update_frame.pack(fill=X, padx=10, pady=10)
 
         row1 = tb.Frame(update_frame)
-        row1.pack(fill=X, padx=10, pady=(10,4))
+        row1.pack(fill=X, padx=10, pady=(10, 4))
 
         tb.Label(row1, text="Selected Item:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
         self.lbl_stock_item = tb.Label(row1, text="(click a row above)",
@@ -266,7 +262,7 @@ class RestroCoreApp:
         self.lbl_stock_item.pack(side=LEFT)
 
         row2 = tb.Frame(update_frame)
-        row2.pack(fill=X, padx=10, pady=(4,10))
+        row2.pack(fill=X, padx=10, pady=(4, 10))
 
         tb.Label(row2, text="Add Quantity:", font=("Helvetica", 11)).pack(side=LEFT, padx=(0, 6))
         self.ent_stock_add = tb.Entry(row2, width=10, font=("Helvetica", 11))
@@ -276,9 +272,9 @@ class RestroCoreApp:
         self.ent_stock_set = tb.Entry(row2, width=10, font=("Helvetica", 11))
         self.ent_stock_set.pack(side=LEFT, padx=(0, 20))
 
-        tb.Button(row2, text="➕ Add Stock",  bootstyle=SUCCESS,
+        tb.Button(row2, text="➕ Add Stock", bootstyle=SUCCESS,
                   command=self._add_stock).pack(side=LEFT, padx=4)
-        tb.Button(row2, text="✏️ Set Stock",  bootstyle=WARNING,
+        tb.Button(row2, text="✏️ Set Stock", bootstyle=WARNING,
                   command=self._set_stock).pack(side=LEFT, padx=4)
 
         self.tree_stock.bind('<<TreeviewSelect>>', self._on_stock_select)
@@ -493,7 +489,7 @@ class RestroCoreApp:
             self.order_cart.pop(idx)
             self.refresh_cart_view()
 
-    def place_order_from_cart(self):
+    def place_order_from_cart(self):                          # ← fixed: back inside class
         table = self.ent_table.get().strip()
         if not table.isdigit() or not self.order_cart:
             Messagebox.show_warning("Invalid table number or empty cart.", "Warning")
@@ -512,6 +508,29 @@ class RestroCoreApp:
             self._log_activity(
                 self.current_user['id'], "ORDER_PLACED",
                 f"Order #{order_id} placed for table {table}.")
+
+            # ── Cloud sync ────────────────────────────────────────
+            try:
+                sync_to_cloud("orders", order_id, {
+                    "order_id":       order_id,
+                    "table_number":   int(table),
+                    "employee":       self.current_user['name'],
+                    "kitchen_status": "Waiting",
+                    "status":         "Pending",
+                    "created_at":     datetime.now().isoformat(),
+                    "items": [
+                        {
+                            "name":     r['name'],
+                            "quantity": r['quantity'],
+                            "price":    r['price']
+                        }
+                        for r in self.order_cart
+                    ]
+                })
+            except Exception as ce:
+                print(f"Cloud sync failed (non-critical): {ce}")
+            # ──────────────────────────────────────────────────────
+
             Messagebox.show_info(f"Order #{order_id} placed!", "Success")
             self.order_cart.clear()
             self.refresh_cart_view()
@@ -663,9 +682,9 @@ class RestroCoreApp:
             row_f = tk.Frame(outer, bg=row_bg, pady=5, padx=8)
             row_f.pack(fill=X)
             tk.Label(row_f, text=name[:30], bg=row_bg, fg=WHT,  font=("Courier", 10), width=28, anchor="w").grid(row=0, column=0, padx=(4, 0))
-            tk.Label(row_f, text=f"× {qty}",       bg=row_bg, fg=DIM,  font=("Courier", 10), width=6,  anchor="center").grid(row=0, column=1)
-            tk.Label(row_f, text=f"${unit_price:.2f}", bg=row_bg, fg=DIM, font=("Courier", 10), width=10, anchor="e").grid(row=0, column=2)
-            tk.Label(row_f, text=f"${sub:.2f}",    bg=row_bg, fg=GRN,  font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0, 4))
+            tk.Label(row_f, text=f"× {qty}",           bg=row_bg, fg=DIM, font=("Courier", 10), width=6,  anchor="center").grid(row=0, column=1)
+            tk.Label(row_f, text=f"${unit_price:.2f}",  bg=row_bg, fg=DIM, font=("Courier", 10), width=10, anchor="e").grid(row=0, column=2)
+            tk.Label(row_f, text=f"${sub:.2f}",         bg=row_bg, fg=GRN, font=("Courier", 10, "bold"), width=12, anchor="e").grid(row=0, column=3, padx=(0, 4))
 
         tk.Frame(outer, bg=DIM, height=1).pack(fill=X, pady=12)
 
@@ -695,7 +714,6 @@ class RestroCoreApp:
         lbl(outer, "Please come again  •  RestroCore POS  v1.0", fg=DIM, font=("Courier", 8)).pack()
         lbl(outer, " ", bg=BG).pack()
 
-        # Only allow payment if the chef has marked the order as Completed
         try:
             self.cursor.execute(
                 "SELECT kitchen_status FROM orders WHERE order_id = %s",
@@ -725,6 +743,16 @@ class RestroCoreApp:
             self._log_activity(
                 self.current_user['id'], "ORDER_PAID",
                 f"Order #{self.active_bill_id} marked as Paid.")
+
+            # ── Cloud sync ────────────────────────────────────────
+            # Uses update() so only these fields change; the rest of
+            # the order document (items, table, etc.) is preserved.
+            try:
+                update_cloud_status("orders", self.active_bill_id, "Paid")
+            except Exception as ce:
+                print(f"Cloud sync failed (non-critical): {ce}")
+            # ──────────────────────────────────────────────────────
+
             Messagebox.show_info("Payment Complete!  Thank you 🎉", "Success")
             self._show_receipt_placeholder()
             self.btn_pay.config(state=DISABLED)
@@ -734,7 +762,6 @@ class RestroCoreApp:
 
     # ═══════════════════════════ KITCHEN TAB (Chef only) ═════════════════════
     def setup_kitchen_tab(self):
-        """Chef view: see all non-Completed orders and update their kitchen status."""
         top = tb.Frame(self.tab_kitchen)
         top.pack(fill=X, padx=10, pady=10)
 
@@ -743,7 +770,6 @@ class RestroCoreApp:
         tb.Button(top, text="↻ Refresh Orders", bootstyle=INFO,
                   command=self._load_kitchen_orders).pack(side=RIGHT)
 
-        # ── Filter bar ──
         filter_frame = tb.Frame(self.tab_kitchen)
         filter_frame.pack(fill=X, padx=10, pady=(0, 8))
 
@@ -754,7 +780,6 @@ class RestroCoreApp:
                            value=opt, bootstyle=INFO,
                            command=self._load_kitchen_orders).pack(side=LEFT, padx=6)
 
-        # ── Order tree ──
         cols = ('order_id', 'table', 'placed_by', 'placed_at', 'kitchen_status')
         self.tree_kitchen = tb.Treeview(self.tab_kitchen, columns=cols,
                                         show='headings', bootstyle=WARNING, height=12)
@@ -772,7 +797,6 @@ class RestroCoreApp:
 
         self.tree_kitchen.bind('<<TreeviewSelect>>', self._on_kitchen_select)
 
-        # ── Items detail for selected order ──
         detail_frame = tb.LabelFrame(self.tab_kitchen, text=" Order Items ")
         detail_frame.pack(fill=X, padx=10, pady=(0, 8))
 
@@ -785,7 +809,6 @@ class RestroCoreApp:
         self.tree_kitchen_detail.column('qty',  width=80, anchor=CENTER)
         self.tree_kitchen_detail.pack(fill=X)
 
-        # ── Status update controls ──
         action_frame = tb.LabelFrame(self.tab_kitchen, text=" Update Status ")
         action_frame.pack(fill=X, padx=10, pady=(0, 10))
 
@@ -859,7 +882,6 @@ class RestroCoreApp:
             self.tree_kitchen.insert('', END,
                                      values=(order_id, table, placed_by, ts, display_status))
 
-        # Clear detail panel
         for i in self.tree_kitchen_detail.get_children():
             self.tree_kitchen_detail.delete(i)
         self._selected_kitchen_order_id = None
@@ -874,7 +896,6 @@ class RestroCoreApp:
         self.lbl_kitchen_sel.config(
             text=f"Selected  →  Order #{vals[0]}  |  Table {vals[1]}  |  Status: {vals[4]}")
 
-        # Load items for this order
         for i in self.tree_kitchen_detail.get_children():
             self.tree_kitchen_detail.delete(i)
         try:
@@ -902,6 +923,15 @@ class RestroCoreApp:
             self._log_activity(
                 self.current_user['id'], "KITCHEN_STATUS",
                 f"Order #{self._selected_kitchen_order_id} kitchen status → '{new_status}'.")
+
+            # ── Cloud sync ────────────────────────────────────────
+            # Uses .update() so only kitchen_status changes in Firestore
+            try:
+                update_cloud_status("orders", self._selected_kitchen_order_id, new_status)
+            except Exception as ce:
+                print(f"Cloud sync failed (non-critical): {ce}")
+            # ──────────────────────────────────────────────────────
+
             Messagebox.show_info(
                 f"Order #{self._selected_kitchen_order_id} marked as '{new_status}'.", "Status Updated")
             self._load_kitchen_orders()
@@ -911,7 +941,6 @@ class RestroCoreApp:
 
     # ═══════════════════════════ STAFF TAB (Manager only) ════════════════════
     def setup_staff_tab(self):
-        # ── Staff list tree ──
         list_frame = tb.LabelFrame(self.tab_staff, text=" Current Staff ")
         list_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
@@ -935,7 +964,6 @@ class RestroCoreApp:
         tb.Button(btn_row, text="🗑 Remove Selected", bootstyle=(DANGER, OUTLINE),
                   command=self._remove_staff).pack(side=LEFT, padx=4)
 
-        # ── Add staff form ──
         form_frame = tb.LabelFrame(self.tab_staff, text=" Add New Staff ")
         form_frame.pack(fill=X, padx=10, pady=(0, 10))
 
@@ -1019,7 +1047,6 @@ class RestroCoreApp:
 
     # ═══════════════════════════ ACTIVITY LOG TAB (Manager only) ════════════
     def setup_activity_log_tab(self):
-        """Shows a full activity log of staff additions/removals and key actions."""
         top = tb.Frame(self.tab_actlog)
         top.pack(fill=X, padx=10, pady=10)
 
@@ -1042,7 +1069,6 @@ class RestroCoreApp:
         tb.Button(right_controls, text="↻ Refresh", bootstyle=INFO,
                   command=self._load_activity_log).pack(side=LEFT)
 
-        # ── Log tree ──
         cols = ('log_id', 'timestamp', 'employee', 'action', 'details')
         self.tree_actlog = tb.Treeview(self.tab_actlog, columns=cols,
                                        show='headings', bootstyle=INFO)
@@ -1062,7 +1088,6 @@ class RestroCoreApp:
         vsb.pack(side=RIGHT, fill=Y, padx=(0, 10))
         self.tree_actlog.pack(fill=BOTH, expand=True, padx=(10, 0), pady=(0, 10))
 
-        # ── Action badges ──
         ACTION_COLORS = {
             "STAFF_ADDED":    "success",
             "STAFF_REMOVED":  "danger",
@@ -1120,8 +1145,6 @@ class RestroCoreApp:
 
     # ═══════════════════════════ HELPERS ═════════════════════════════════════
     def _log_activity(self, employee_id, action, details):
-        """Insert a row into activity_log. Silently ignores failure so it never
-        blocks the main workflow."""
         try:
             self.cursor.execute(
                 "INSERT INTO activity_log (employee_id, action, details) "
@@ -1132,7 +1155,6 @@ class RestroCoreApp:
             self._safe_rollback()
 
     def _safe_rollback(self):
-        """Rollback any aborted transaction without raising."""
         try:
             self.conn.rollback()
         except Exception:
