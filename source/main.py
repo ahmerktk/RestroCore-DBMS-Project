@@ -4,7 +4,7 @@ from ttkbootstrap.dialogs import Messagebox
 import psycopg2
 import os
 from datetime import datetime
-from cloud_service import sync_to_cloud, update_cloud_status   # ← added update_cloud_status
+from cloud_service import sync_to_cloud, update_cloud_field
 
 try:
     from PIL import Image, ImageTk
@@ -748,7 +748,7 @@ class RestroCoreApp:
             # Uses update() so only these fields change; the rest of
             # the order document (items, table, etc.) is preserved.
             try:
-                update_cloud_status("orders", self.active_bill_id, "Paid")
+                update_cloud_field("orders", self.active_bill_id, "status", "Paid")
             except Exception as ce:
                 print(f"Cloud sync failed (non-critical): {ce}")
             # ──────────────────────────────────────────────────────
@@ -925,9 +925,8 @@ class RestroCoreApp:
                 f"Order #{self._selected_kitchen_order_id} kitchen status → '{new_status}'.")
 
             # ── Cloud sync ────────────────────────────────────────
-            # Uses .update() so only kitchen_status changes in Firestore
             try:
-                update_cloud_status("orders", self._selected_kitchen_order_id, new_status)
+                update_cloud_field("orders", self._selected_kitchen_order_id, "kitchen_status", new_status)
             except Exception as ce:
                 print(f"Cloud sync failed (non-critical): {ce}")
             # ──────────────────────────────────────────────────────
