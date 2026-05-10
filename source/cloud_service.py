@@ -33,11 +33,10 @@ def sync_to_cloud(collection_name, document_id, data_dict):
         return False
 
 # 4. OPTIONAL: A function to update just one field (like Order Status)
-
-def update_cloud_status(collection_name, document_id, field_name, new_value):
+def update_cloud_status(collection_name, document_id, new_status):
     try:
         doc_ref = db.collection(collection_name).document(str(document_id))
-        doc_ref.update({field_name: new_value})
+        doc_ref.update({"status": new_status})
         return True
     except Exception as e:
         print(f"❌ Update Error: {e}")
